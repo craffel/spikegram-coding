@@ -175,36 +175,9 @@ def matchingPursuit( dictionary, x, threshold = .1 ):
   currentResidualMax = np.inf
 
   threshold = threshold*np.max( np.abs( x ) )
-  
-  # Parallelize cross-correlation computation...
-  def __consumer(in_Q, out_Q):
-    while True:
-      # Until you get an empty queue exception
-      try:
-        i = in_Q.get(True, 1)
-        out_Q.put( (i, np.correlate( residual, dictionary[i], 'same') ) )
-      except:
-        break
-    out_Q.close()
 
   # Until the max of the residual is smaller than our threshold value
   while currentResidualMax > threshold:
-    
-    '''# Create queues to hold input indices and output index/correlation pairs
-    in_Q = mp.Queue()
-    out_Q = mp.Queue()
-    for i in np.arange( nKernels ):
-      in_Q.put( i )
-
-    # Number of cores!
-    nCores = 4
-    for i in np.arange( nCores ):
-      mp.Process( target=__consumer, args=(in_Q, out_Q) ).start()
-          
-    for j in np.arange( nKernels ):
-      (i, v) = out_Q.get( True )
-      correlations[i] = v
-    '''
     
     # The old way of doing it
     for n in xrange( nKernels ):
@@ -228,13 +201,6 @@ def matchingPursuit( dictionary, x, threshold = .1 ):
         correlation = np.correlate( residual[correlationStart:changeEnd + kernelSize - 1], dictionary[n], 'valid' )
         # [:correlation.shape[0]] is an indexing hack to avoid shape mismatches
         correlations[n, correlationStart + kernelSize/2:changeEnd + kernelSize/2][:correlation.shape[0]] = correlation
-
-    '''
-    randIndex = np.random.randint( nKernels )
-    print np.max( np.abs( np.correlate( residual, dictionary[randIndex], 'same' ) - correlations[randIndex] ) )
-    plt.plot( np.correlate( residual, dictionary[0], 'same' ) )#[zoomMe - 100:zoomMe+100] )
-    plt.plot( correlations[0] )#[zoomMe - 100:zoomMe + 100] )
-    plt.show()'''
             
     # Get the kernel index and sample offset and store them
     bestKernelAndOffset = np.unravel_index( np.argmax( np.abs( correlations ) ), correlations.shape )
@@ -251,17 +217,9 @@ def matchingPursuit( dictionary, x, threshold = .1 ):
     #shiftedKernel = np.zeros( residual.shape[0] )
     #shiftedKernel[offsets[currentIteration]:offsets[currentIteration] + kernel.shape[0]] = kernel[:shiftedKernel.shape[0] - offsets[currentIteration]]
 
-    '''if currentIteration % 1000 == 0:
-      plt.subplot( 211 )
-      plt.plot( residual )
-      plt.plot( np.arange( offsets[currentIteration], offsets[currentIteration] + kernel.shape[0] ), kernel )'''
     # Subtract out the shfited kernel to get the new residual
     #residual -= shiftedKernel
     residual[offsets[currentIteration]:offsets[currentIteration] + kernel.shape[0]] -= kernel
-    '''if currentIteration % 1000 == 0:
-      plt.subplot( 212 )
-      plt.plot( residual )
-      plt.show()'''
     currentResidualMax = np.max( np.abs( residual ) )
     print "Iteration {}, time = {:.3f}, residual = {:.3f}, scale = {:.3f}".format( currentIteration, time.time() - lastTime, currentResidualMax, np.mean( kernel**2 ) )
     lastTime = time.time()
