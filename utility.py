@@ -8,12 +8,11 @@ import wave
 import csv
 import os
 import struct
-import platform
-if platform.system() is not 'Windows':
-  import mad
+import mad
+import scipy.io.wavfile as wavfile
 
 def getWavData( wavFile ):
-  # Get wav data
+  '''# Get wav data
   wav = wave.open (wavFile, "r")
   (nChannels, sampleWidth, frameRate, nFrames, compressionType, compressionName) = wav.getparams()
   frames = wav.readframes( nFrames*nChannels )
@@ -30,6 +29,15 @@ def getWavData( wavFile ):
   # Normalize
   audioData = audioData/np.max(np.abs(audioData))
   return audioData, frameRate
+  '''
+  # Get wav data
+  fs, audioData = wavfile.read(wavFile)
+  # Convert to mono
+  if (len(audioData.shape) > 1) and (audioData.shape[1] > 1):
+    audioData = np.mean( audioData, axis=1 )
+  # Normalize
+  audioData = (32767.0*audioData)/np.max(np.abs(audioData))
+  return audioData, fs
 
 def getMp3Data( mp3File ):
   # Prepare mp3 file object
@@ -65,31 +73,19 @@ def mp3ToPCM( mf ):
       break
     # Convenient, fast function!  Reads in 16 bit values from the buffer
     buffy = np.frombuffer(buffy, 'h')
-    if len( buffy ) != buffyLen:
-      print "Warning: MP3 buffer size was different than expected.  Trying to recover."
-      if len( buffy ) > buffyLen:
-        audioData = np.append( audioData, np.zeros( audioData.shape[0]*(len( buffy )/buffyLen)*4 - audioData.shape[0] ) )
-      buffyLen = len( buffy )
     # Store this buffer in the audioData
     audioData[dataPointer:(dataPointer+buffyLen)] = buffy
     # Incrememt data pointer
     dataPointer = dataPointer + buffyLen
     # Read next buffer
     buffy = mf.read();
-  if dataPointer + buffyLen < audioData.shape[0]:
-    audioData = audioData[:dataPointer + buffyLen]
   return audioData
 
-def writeWav( audioData, fs, filename, normalize = 0 ):
+def writeWav( audioData, fs, filename, normalize = 1 ):
   if normalize:
     audioData = audioData/np.max( np.abs( audioData ) )
   audioData = np.array( audioData*32767, dtype=np.int16 )
-  audioDataBuffer = struct.pack( 'h'*audioData.shape[0], *tuple( audioData ) )
-  file = wave.open(filename, 'wb')
-  file.setparams( (1, 2, fs, audioData.shape[0], 'NONE', 'noncompressed') )
-  file.writeframes( audioDataBuffer )
-  file.close()
-  #wavfile.write( filename, fs, audioData )
+  wavfile.write( filename, fs, audioData )
 
 # Wrapper for all audio file types
 def getAudioData( audioFile ):
@@ -98,30 +94,23 @@ def getAudioData( audioFile ):
     print "%s doesn't exist." % audioFile
     return np.array([]), 0
   basename, extension = os.path.splitext( audioFile )
-  if platform.system() is not 'Windows' and extension == '.mp3':
+  if extension == '.mp3':
     return getMp3Data( audioFile )
   elif extension == '.wav':
     return getWavData( audioFile )
   else:
-    print "%s is not a recognized audio file." % audioFile
+    print "%s is not a .wav or .mp3." % audioFile
     return np.array([]), 0
 
 # Get files of a certain type in a directory, recursively
 def getFiles( path, extension ):
-  # If just a file was supplied
-  if not os.path.isdir( path ):
-    if os.path.splitext( path )[1] == extension:
-      return [path]
-    else:
-      return []
-  else:
-    fileList = []
-    for root, subdirectories, files in os.walk( path ):
-      for file in files:
-        # Only get files of the given type
-        if os.path.splitext( file )[1] == extension:
-          fileList.append( os.path.join( root, file ) )
-    return fileList
+  fileList = []
+  for root, subdirectories, files in os.walk( path ):
+    for file in files:
+      # Only get files of the given type
+      if os.path.splitext(file)[1] == extension:
+        fileList.append(os.path.join(root, file))
+  return fileList
 
 # Split a signal into frames
 def splitSignal( data, hop, frameSize ):
@@ -132,15 +121,11 @@ def splitSignal( data, hop, frameSize ):
     dataSplit[n] = data[n*hop:n*hop+frameSize]
   return dataSplit
 
-def unsplitSignal( dataSplit, hop, frameSize ):
-  nFrames = dataSplit.shape[0]
-  data = np.zeros( nFrames*(hop+1) )
-  for n in np.arange( nFrames ):
-    data[n*hop:n*hop+frameSize] += dataSplit[n]
-  return data/np.max( np.abs( data ) )
-
 # Get spectrogram of signal
-def getSpectrogram( data, hop = 512, frameSize = 1024, window = np.ones( 1024 ) ):
+def getSpectrogram( data, **kwargs ):
+  hop = kwargs.get('hop', 512)
+  frameSize = kwargs.get('frameSize', 1024)
+  window = kwargs.get('window', np.hanning(frameSize))
   # Framify the signal
   dataSplit = splitSignal( data, hop, frameSize )
   # Create spectrogram array
@@ -154,15 +139,17 @@ def getSpectrogram( data, hop = 512, frameSize = 1024, window = np.ones( 1024 ) 
 def plotSpectrogram( spectrogram ):
   import matplotlib.pyplot as plt
   plt.subplot(211)
-  plt.imshow( np.log( np.abs( spectrogram ).T + 10e-100), origin='lower', aspect='auto' )
+  plt.imshow( 20*np.log10( np.abs( spectrogram ).T + np.max(np.abs(spectrogram))*.0001 ), origin='lower', aspect='auto', interpolation='nearest', cmap=plt.cm.gray_r )
   plt.title( 'Log(Magnitude)' )
   plt.ylabel( 'Frequency bin' )
   plt.xlabel( 'Frame' )
+  plt.colorbar()
   plt.subplot(212)
   plt.title( 'Phase' )
-  plt.imshow( np.angle( spectrogram ).T, origin='lower', aspect='auto' )
+  plt.imshow( np.unwrap( np.angle( spectrogram ).T, axis=0 ), origin='lower', aspect='auto', interpolation='nearest', cmap=plt.cm.gray_r )
   plt.ylabel( 'Frequency bin' )
   plt.xlabel( 'Frame' )
+  plt.colorbar()
   plt.show()
 
 def getSignalFromSpectrogram( spectrogram, hop = 512, window = np.ones( 1024 ) ):
@@ -177,17 +164,6 @@ def getSignalFromSpectrogram( spectrogram, hop = 512, window = np.ones( 1024 ) )
     outputSignal[n*hop:n*hop + frameSize] = outputSignal[n*hop:n*hop + frameSize] + window*np.real(np.fft.irfft(spectrogram[n]))
   return outputSignal
 
-def getAnnotations( fileList, annotationDirectory ):
-  annotationList = []
-  for file in fileList:
-    path, file = os.path.split( file )
-    annotationPath = os.path.join( path, annotationDirectory )
-    annotationList.append( os.path.join( annotationPath, file + '.txt' ) )
-  return annotationList
-
-def getOnsets( file ):
-  return np.genfromtxt( file )
-
 # Get subdirectories for a given directory
 def getSubdirectories( path ):
   dirList = []
@@ -200,21 +176,9 @@ def getSubdirectories( path ):
 def midiToHz( midiNote ):
   return 440.0*(2.0**((midiNote - 69)/12.0))
 
-# Convert Hz to MIDI note (as a float!)
-def hzToMIDI( frequency ):
-  return 12.0*np.log2( frequency/440.0 ) + 69
-
-# Convert MIDI note to bin number (as a float!) 
-def midiToBin( midiNote, N, fs ):
-  return hzToBin( midiToHz( midiNote ), N, fs )
-
 # Convert bin in FFT to Hz
 def binToHz( bin, N, fs ):
   return fs*bin/(N*1.0)
-
-# Convert hz to closest FFT bin (as a float!)
-def hzToBin( frequency, N, fs ):
-  return frequency*N/(fs*1.0)
 
 # Return bins in an FFT which are close to a Hz value
 def hzToBins( hz, N, fs, tolerance = 0.02 ):
@@ -223,12 +187,3 @@ def hzToBins( hz, N, fs, tolerance = 0.02 ):
   # Convert arange to integer indices
   bins = np.array( np.round( binRange ), dtype = np.int )
   return bins
-
-# Return the next greatest power of 2 for any integer
-def nextPowerOf2( value ):
-  return np.int( 2**np.ceil( np.log2( value ) ) )
-
-# Return MIDI note name (as a string) for a MIDI note number
-def midiNoteToString( note ):
-  notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B' ]
-  return notes[ int( note ) % 12 ] + str( int( note )/12 - 5 )

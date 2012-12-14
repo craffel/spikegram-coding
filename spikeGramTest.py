@@ -12,137 +12,11 @@ import optparse
 import scipy.signal
 import multiprocessing as mp
 import time
+import ERBFilters
+import fastAbsArgMax
 
-import logging
-logger = mp.log_to_stderr()
-logger.setLevel(logging.INFO)
-
-
-
-# Computes an array of N frequencies uniformly spaced on an ERB scale
-# Based on Slaney's Auditory Toolbox implementation
-# Verified same output for input params 100, 44100/4, 100.
-def ERBSpace( lowFreq, highFreq, N ):
-  # Change the following three parameters if you wish to use a different
-  # ERB scale.  Must change in MakeERBCoeffs too.
-  # Glasberg and Moore Parameters
-  EarQ = 9.26449
-  minBW = 24.7
-  order = 1
-
-  # All of the followFreqing expressions are derived in Apple TR #35, "An
-  # Efficient Implementation of the Patterson-Holdsworth Cochlear
-  # Filter Bank."  See pages 33-34.
-  return -(EarQ*minBW) + np.exp(np.arange(1, N+1)*(-np.log(highFreq + EarQ*minBW) + np.log(lowFreq + EarQ*minBW))/(1.0*N))*(highFreq + EarQ*minBW);
-
-# Computes the filter coefficients for gammatone filters.
-# Based on Slaney's Auditory Toolbox implementation.
-# Verified same output for params 44100, 16, 100.
-def makeERBFilters( fs, numChannels, lowFreq ):
-
-  T = 1.0/fs
-  cf = ERBSpace(lowFreq, fs/2, numChannels)
-
-  # Change the followFreqing three parameters if you wish to use a different
-  # ERB scale.  Must change in ERBSpace too.
-  # Glasberg and Moore Parameters
-  EarQ = 9.26449
-  minBW = 24.7
-  order = 1
-
-  ERB = ((cf/EarQ)**order + minBW**order)**(1.0/order)
-  B = 1.019*2*np.pi*ERB
-
-  A0 = T
-  A2 = 0
-  B0 = 1
-  B1 = -2*np.cos(2*cf*np.pi*T)/np.exp(B*T)
-  B2 = np.exp(-2*B*T)
-
-  A11 = -(2*T*np.cos(2*cf*np.pi*T)/np.exp(B*T) + 2*np.sqrt(3+2**1.5)*T*np.sin(2*cf*np.pi*T)/ \
-          np.exp(B*T))/2.0
-  A12 = -(2*T*np.cos(2*cf*np.pi*T)/np.exp(B*T) - 2*np.sqrt(3+2**1.5)*T*np.sin(2*cf*np.pi*T)/ \
-          np.exp(B*T))/2.0
-  A13 = -(2*T*np.cos(2*cf*np.pi*T)/np.exp(B*T) + 2*np.sqrt(3-2**1.5)*T*np.sin(2*cf*np.pi*T)/ \
-          np.exp(B*T))/2.0
-  A14 = -(2*T*np.cos(2*cf*np.pi*T)/np.exp(B*T) - 2*np.sqrt(3-2**1.5)*T*np.sin(2*cf*np.pi*T)/ \
-          np.exp(B*T))/2.0
-
-  gain = abs((-2*np.exp(4*1j*cf*np.pi*T)*T + \
-              2*np.exp(-(B*T) + 2*1j*cf*np.pi*T)*T* \
-              (np.cos(2*cf*np.pi*T) - np.sqrt(3 - 2**(3/2.0))* \
-               np.sin(2*cf*np.pi*T))) * \
-             (-2*np.exp(4*1j*cf*np.pi*T)*T + \
-              2*np.exp(-(B*T) + 2*1j*cf*np.pi*T)*T* \
-              (np.cos(2*cf*np.pi*T) + np.sqrt(3 - 2**(3/2.0)) * \
-               np.sin(2*cf*np.pi*T)))* \
-             (-2*np.exp(4*1j*cf*np.pi*T)*T + \
-              2*np.exp(-(B*T) + 2*1j*cf*np.pi*T)*T* \
-              (np.cos(2*cf*np.pi*T) - \
-               np.sqrt(3 + 2**(3/2.0))*np.sin(2*cf*np.pi*T))) * \
-             (-2*np.exp(4*1j*cf*np.pi*T)*T + 2*np.exp(-(B*T) + 2*1j*cf*np.pi*T)*T* \
-              (np.cos(2*cf*np.pi*T) + np.sqrt(3 + 2**(3/2.0))*np.sin(2*cf*np.pi*T))) / \
-             (-2 / np.exp(2*B*T) - 2*np.exp(4*1j*cf*np.pi*T) +  \
-              2*(1 + np.exp(4*1j*cf*np.pi*T))/np.exp(B*T))**4)
-
-  allfilts = np.ones( cf.shape[0] )
-  return np.dstack( (A0*allfilts, A11, A12, A13, A14, A2*allfilts, B0*allfilts, B1, B2, gain) )[0]
-
-# Process an input waveform with a gammatone filter bank
-# Based on Slaney's Auditory Toolbox implementation
-def ERBFilterBank(x, fcoefs ):
-  A0  = fcoefs[:,0]
-  A11 = fcoefs[:,1]
-  A12 = fcoefs[:,2]
-  A13 = fcoefs[:,3]
-  A14 = fcoefs[:,4]
-  A2  = fcoefs[:,5]
-  B0  = fcoefs[:,6]
-  B1  = fcoefs[:,7]
-  B2  = fcoefs[:,8]
-  gain= fcoefs[:,9]
-  
-  output = np.zeros( (gain.shape[0], x.shape[0]) )
-  for chan in np.arange( gain.shape[0] ):
-    y1 = scipy.signal.lfilter(np.array([A0[chan]/gain[chan], A11[chan]/gain[chan], \
-               A2[chan]/gain[chan]]), \
-              np.array([B0[chan], B1[chan], B2[chan]]), x);
-    y2 = scipy.signal.lfilter(np.array([A0[chan], A12[chan], A2[chan]]), \
-              np.array([B0[chan], B1[chan], B2[chan]]), y1);
-    y3 = scipy.signal.lfilter(np.array([A0[chan], A13[chan], A2[chan]]), \
-              np.array([B0[chan], B1[chan], B2[chan]]), y2);
-    y4 = scipy.signal.lfilter(np.array([A0[chan], A14[chan], A2[chan]]), \
-              np.array([B0[chan], B1[chan], B2[chan]]), y3);
-    output[chan, :] = y4
-
-  return output
-
-# Converts a matrix of ERB filters from makeERBFilters to kernels
-# It would be cool to make this non-ERB dependent, to try other filters.
-def ERBFiltersToKernels( fcoefs, threshold = .001 ):
-  # Create impulse
-  impulse = np.zeros( 10000 )
-  impulse[0] = 1.0
-  # Get impulse responses
-  impulseResponses = ERBFilterBank( impulse, fcoefs )
-  # Dictionary for gammatone kernels
-  kernelDictionary = {}
-  for n in np.arange( impulseResponses.shape[0] ):
-    impulseResponse = impulseResponses[n]
-    impulseResponsePeak = np.max( impulseResponse )
-    # Find index of last value greater than the threshold
-    trim = 0
-    for m in np.arange( impulseResponse.shape[0] ):
-      if impulseResponse[m] > threshold*impulseResponsePeak:
-        trim = m
-    # Trim the impulse response to this value and store in the dictionary
-    kernelDictionary[n] = impulseResponse[:trim]
-    # Normalize
-    kernelDictionary[n] /= np.sqrt( np.sum( kernelDictionary[n]**2 ) )
-  return kernelDictionary
-
-# Encodes an input signal "x" with elements from "dictionary"
-def matchingPursuit( dictionary, x, threshold = .1 ):
+# Encodes an input signal "x" with elements from "dictionary
+def matchingPursuit( dictionary, x, amplitudeThreshold=.01, scaleThreshold=0, maxIterations=50000 ):
   
   # Find the biggest kernel
   biggestKernelSize = 0
@@ -162,8 +36,6 @@ def matchingPursuit( dictionary, x, threshold = .1 ):
   correlations = np.zeros( (nKernels, residual.shape[0]) )
   # Keep track of the iterations
   currentIteration = 0
-  # Max # of iterations
-  maxIterations = 50000
   # Where we'll be storing the kernels, scales, and offsets
   scales = np.zeros( maxIterations )
   kernels = np.zeros( maxIterations )
@@ -174,22 +46,23 @@ def matchingPursuit( dictionary, x, threshold = .1 ):
   # For checking whether we've converged
   currentResidualMax = np.inf
 
-  threshold = threshold*np.max( np.abs( x ) )
-
-  # Until the max of the residual is smaller than our threshold value
-  while currentResidualMax > threshold:
+  amplitudeThreshold = amplitudeThreshold*np.max( np.abs( x ) )
+  
+  # Until the max of the residual is smaller than our amplitudeThreshold value
+  while currentResidualMax > amplitudeThreshold:
     
-    # The old way of doing it
-    for n in xrange( nKernels ):
-      # On first iteration, do the whole correlation
-      if currentIteration == 0:
-        correlations[n] = np.correlate( residual, dictionary[n], 'same' )
-      # On subsequent iterations, only update the part of the correlation that has changed
-      else:
-        # Where does the change in the residual start?
-        changeStart = offsets[currentIteration - 1]
-        # Look up the previous kernel subtracted from the residual - its size is where the change in the residual ends
-        changeEnd = changeStart + dictionary[kernels[currentIteration - 1]].shape[0]
+    # On first iteration, do the whole correlation
+    if currentIteration == 0:
+      for n in xrange( nKernels ):
+        if currentIteration == 0:
+          correlations[n] = scipy.signal.fftconvolve( residual, dictionary[n][::-1], 'same' )
+    # On subsequent iterations, only re-correlate where it has changed
+    else:
+      # Where does the change in the residual start?
+      changeStart = offsets[currentIteration - 1]
+      # Look up the previous kernel subtracted from the residual - its size is where the change in the residual ends
+      changeEnd = changeStart + dictionary[kernels[currentIteration - 1]].shape[0]
+      for n in xrange( nKernels ):
         # What's the size of current kernel to be correlated?
         kernelSize = dictionary[n].shape[0]
         # Where should we start correlating this kernel for no edge effects?
@@ -198,31 +71,30 @@ def matchingPursuit( dictionary, x, threshold = .1 ):
         if correlationStart < 0:
           correlationStart = 0
         # Correlate with no edge effects
-        correlation = np.correlate( residual[correlationStart:changeEnd + kernelSize - 1], dictionary[n], 'valid' )
+        #correlation = np.correlate( residual[correlationStart:changeEnd + kernelSize - 1], dictionary[n], 'valid' )
+        correlation = scipy.signal.fftconvolve( residual[correlationStart:changeEnd + kernelSize - 1], dictionary[n][::-1], 'valid' )
         # [:correlation.shape[0]] is an indexing hack to avoid shape mismatches
         correlations[n, correlationStart + kernelSize/2:changeEnd + kernelSize/2][:correlation.shape[0]] = correlation
             
     # Get the kernel index and sample offset and store them
-    bestKernelAndOffset = np.unravel_index( np.argmax( np.abs( correlations ) ), correlations.shape )
+    bestKernelAndOffset = fastAbsArgMax.fastAbsArgMax( correlations )#np.unravel_index( np.argmax( np.abs( correlations ) ), correlations.shape )
     kernels[currentIteration] = bestKernelAndOffset[0]
     offsets[currentIteration] = bestKernelAndOffset[1]
+        
     # Get the kernel scale
     scales[currentIteration] = correlations[kernels[currentIteration], offsets[currentIteration]]
-
     # Get the kernel that turned out to be the best
     kernel = dictionary[kernels[currentIteration]]*scales[currentIteration]
     # The actual offset is the correlation offset - (the kernel size/2)
     offsets[currentIteration] -= kernel.shape[0]/2
-    # Construct the shifted kernel to subtract out of the residual
-    #shiftedKernel = np.zeros( residual.shape[0] )
-    #shiftedKernel[offsets[currentIteration]:offsets[currentIteration] + kernel.shape[0]] = kernel[:shiftedKernel.shape[0] - offsets[currentIteration]]
-
     # Subtract out the shfited kernel to get the new residual
-    #residual -= shiftedKernel
     residual[offsets[currentIteration]:offsets[currentIteration] + kernel.shape[0]] -= kernel
-    currentResidualMax = np.max( np.abs( residual ) )
-    print "Iteration {}, time = {:.3f}, residual = {:.3f}, scale = {:.3f}".format( currentIteration, time.time() - lastTime, currentResidualMax, np.mean( kernel**2 ) )
+
+    currentResidualMax = np.max( np.abs( kernel ) )
+    print "Iteration {}, time = {:.3f}, scale = {:.3f}".format( currentIteration, time.time() - lastTime, currentResidualMax/amplitudeThreshold )
     lastTime = time.time()
+    if np.abs(scales[currentIteration]) < scaleThreshold:
+      break
     # Next iteration...
     currentIteration += 1
     if currentIteration > maxIterations - 1:
@@ -248,7 +120,10 @@ if __name__ == "__main__":
     print "Usage: %s audio.wav" % (sys.argv[0])
     sys.exit()
   audioData, fs = utility.getAudioData( sys.argv[1] )
-  kernelDictionary = ERBFiltersToKernels( makeERBFilters( fs, 200, 100 ) )
+  # Create impulse
+  impulse = np.zeros( 10000 )
+  impulse[0] = 1.0
+  kernelDictionary = ERBFilters.ERBFiltersToKernels( impulse, ERBFilters.makeERBFilters( fs, 200, 100 ) )
   reconstructedSignal, residual, scales, kernels, offsets = matchingPursuit( kernelDictionary, audioData )
   plt.subplot(211)
   plt.plot( audioData )
