@@ -138,17 +138,11 @@ def getSpectrogram( data, **kwargs ):
 # Plot the magnitude and phase of a spectrogram
 def plotSpectrogram( spectrogram ):
   import matplotlib.pyplot as plt
-  plt.subplot(211)
-  plt.imshow( 20*np.log10( np.abs( spectrogram ).T + np.max(np.abs(spectrogram))*.0001 ), origin='lower', aspect='auto', interpolation='nearest', cmap=plt.cm.gray_r )
+  plt.imshow( 20*np.log10( np.abs( spectrogram[:,:500] ).T + np.max(np.abs(spectrogram[:,:500]))*.001 ), origin='lower', aspect='auto', interpolation='nearest' )
   plt.title( 'Log(Magnitude)' )
   plt.ylabel( 'Frequency bin' )
   plt.xlabel( 'Frame' )
-  plt.colorbar()
-  plt.subplot(212)
-  plt.title( 'Phase' )
-  plt.imshow( np.unwrap( np.angle( spectrogram ).T, axis=0 ), origin='lower', aspect='auto', interpolation='nearest', cmap=plt.cm.gray_r )
-  plt.ylabel( 'Frequency bin' )
-  plt.xlabel( 'Frame' )
+  #plt.axis('off'
   plt.colorbar()
   plt.show()
 

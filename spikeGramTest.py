@@ -16,7 +16,7 @@ import ERBFilters
 import fastAbsArgMax
 
 # Encodes an input signal "x" with elements from "dictionary
-def matchingPursuit( dictionary, x, amplitudeThreshold=.01, scaleThreshold=0, maxIterations=50000 ):
+def matchingPursuit( dictionary, x, SNRThreshold=20, scaleThreshold=0, maxIterations=50000 ):
   
   # Find the biggest kernel
   biggestKernelSize = 0
@@ -44,12 +44,12 @@ def matchingPursuit( dictionary, x, amplitudeThreshold=.01, scaleThreshold=0, ma
   # For keeping track of how long we've run
   lastTime = time.time()
   # For checking whether we've converged
-  currentResidualMax = np.inf
-
-  amplitudeThreshold = amplitudeThreshold*np.max( np.abs( x ) )
+  currentResidualSNR = -np.inf
   
+  signalNorm = np.dot( x, x )
+
   # Until the max of the residual is smaller than our amplitudeThreshold value
-  while currentResidualMax > amplitudeThreshold:
+  while currentResidualSNR < SNRThreshold:
     
     # On first iteration, do the whole correlation
     if currentIteration == 0:
@@ -90,8 +90,8 @@ def matchingPursuit( dictionary, x, amplitudeThreshold=.01, scaleThreshold=0, ma
     # Subtract out the shfited kernel to get the new residual
     residual[offsets[currentIteration]:offsets[currentIteration] + kernel.shape[0]] -= kernel
 
-    currentResidualMax = np.max( np.abs( kernel ) )
-    print "Iteration {}, time = {:.3f}, scale = {:.3f}".format( currentIteration, time.time() - lastTime, currentResidualMax/amplitudeThreshold )
+    currentResidualSNR = 10*np.log10(signalNorm/np.dot(residual[biggestKernelSize:-biggestKernelSize], residual[biggestKernelSize:-biggestKernelSize]))
+    print "Iteration {}, time = {:.3f}, SNR = {:.3f}".format( currentIteration, time.time() - lastTime, currentResidualSNR )
     lastTime = time.time()
     if np.abs(scales[currentIteration]) < scaleThreshold:
       break
@@ -124,11 +124,17 @@ if __name__ == "__main__":
   impulse = np.zeros( 10000 )
   impulse[0] = 1.0
   kernelDictionary = ERBFilters.ERBFiltersToKernels( impulse, ERBFilters.makeERBFilters( fs, 200, 100 ) )
-  reconstructedSignal, residual, scales, kernels, offsets = matchingPursuit( kernelDictionary, audioData )
-  plt.subplot(211)
+  reconstructedSignal, residual, scales, kernels, offsets = matchingPursuit( kernelDictionary, audioData, 16, 0, 1000000 )#(2000.0*audioData.shape[0])/fs )
+  '''plt.subplot(211)
   plt.plot( audioData )
   plt.subplot(212)
   plt.plot( reconstructedSignal )
   plt.plot( residual )
-  plt.show()
-  utility.writeWav( reconstructedSignal, fs, os.path.splitext( sys.argv[1] )[0] + "Reconstructed.wav" )
+  plt.show()'''
+  basename = os.path.splitext( sys.argv[1] )[0]
+  utility.writeWav( reconstructedSignal, fs, basename + "Reconstructed.wav" )
+  scalesKernelsAndOffsets = np.zeros( (scales.shape[0], 3) )
+  scalesKernelsAndOffsets[:, 0] = scales
+  scalesKernelsAndOffsets[:, 1] = kernels
+  scalesKernelsAndOffsets[:, 2] = offsets
+  np.save( basename + 'ReconstructedScalesKernelsAndOffsets.npy', scalesKernelsAndOffsets )
